@@ -1,34 +1,54 @@
-"""
-B2, part 2 — implement the cost-tagging check.
+#!/usr/bin/env python3
+"""Fail if any taggable resource in a Terraform plan JSON lacks landlord_account_id.
 
-Read fixtures/plan.json for the shape of a `terraform show -json` plan: a `resource_changes`
-list, where each entry has a `type`, an `address`, and `change.after.tags`.
-
-Implement check_plan() so it:
-  - Looks at every resource being created or updated (skip anything whose change.actions
-    isn't "create" or "update" — a "no-op"/"read" change, or a "delete" with no `after`
-    block at all).
-  - Fails (returns a non-zero exit code) if the resource is missing the tag that identifies
-    the real billing unit, per README.md's domain model — not whatever tag the resource
-    happens to already carry.
-  - Is idempotent: running this twice against the same plan file produces the same result,
-    with no duplicate output and no flipped pass/fail. This is about a single run being
-    stable and repeatable — it does not require remembering anything between runs.
-  - Prints which specific resource address(es) are missing the tag.
-
-Run manually: python scripts/cost_tag_check.py fixtures/plan.json
+Usage: python scripts/cost_tag_check.py fixtures/plan.json
+Output is deterministic: sorted by resource address, no timestamps.
 """
 import json
 import sys
 
+REQUIRED_TAG = "landlord_account_id"
+IGNORED_ACTIONS = ({"delete"}, {"no-op"})  # resources being removed / untouched
 
-def check_plan(plan_path: str) -> int:
-    """
-    Returns an exit code: 0 if every resource being created or updated has
-    `landlord_account_id`, non-zero otherwise.
-    """
-    raise NotImplementedError("Implement this.")
+
+def _tags(after):
+    # tags_all includes provider default_tags; fall back to tags
+    for key in ("tags_all", "tags"):
+        if after.get(key):
+            return after[key]
+    return {}
+
+
+def check_plan(plan: dict) -> list[dict]:
+    violations = []
+    for rc in plan.get("resource_changes", []):
+        change = rc.get("change", {})
+        if set(change.get("actions", [])) in IGNORED_ACTIONS:
+            continue
+        after = change.get("after") or {}
+        if "tags" not in after and "tags_all" not in after:
+            continue  # resource type is not taggable: generic, no hardcoded types
+        if change.get("after_unknown", {}).get("tags_all") is True:
+            continue  # unknown at plan time; cannot judge
+        value = _tags(after).get(REQUIRED_TAG)
+        if value is None or str(value).strip() == "":
+            violations.append({
+                "address": rc["address"],  # idempotency key
+                "type": rc.get("type"),
+                "reason": f"missing or empty tag '{REQUIRED_TAG}'",
+            })
+    return sorted(violations, key=lambda v: v["address"])
+
+
+def main(argv):
+    with open(argv[1]) as f:
+        plan = json.load(f)
+    violations = check_plan(plan)
+    print(json.dumps({"required_tag": REQUIRED_TAG,
+                      "violations": violations,
+                      "result": "FAIL" if violations else "PASS"}, indent=2))
+    return 1 if violations else 0
 
 
 if __name__ == "__main__":
-    sys.exit(check_plan(sys.argv[1]))
+    sys.exit(main(sys.argv))

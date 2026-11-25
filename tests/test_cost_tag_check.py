@@ -1,15 +1,41 @@
-"""
-Write tests here proving:
-  1. Happy path: running the check against fixtures/plan.json correctly flags the resources
-     missing `landlord_account_id` (listing_media, mls_feed_sync) and passes the ones that
-     have it (landlord_media[0], screening_report_export). The fixture also has a "no-op"
-     entry and a "delete" entry with no `after` block at all — neither should appear in the
-     output or crash the check.
-  2. Idempotency: running the check twice against the same plan file produces the same
-     result both times, with no duplicated output.
-
-check_plan() takes a file path, not a dict — for a case that needs its own plan contents
-instead of the shared fixture, write one with pytest's `tmp_path` rather than editing
-fixtures/plan.json. You don't need to shell out to the real script for every case.
-"""
 from scripts.cost_tag_check import check_plan
+
+
+def rc(addr, tags, actions=("create",), key="tags"):
+    return {
+        "address": addr,
+        "type": "x",
+        "change": {"actions": list(actions), "after": {key: tags}},
+    }
+
+
+def test_missing_tag_fails_and_tenant_id_does_not_count():
+    plan = {"resource_changes": [rc("aws_s3_bucket.a", {"tenant_id": "t1"})]}
+    assert [v["address"] for v in check_plan(plan)] == ["aws_s3_bucket.a"]
+
+
+def test_present_tag_passes():
+    plan = {"resource_changes": [rc("x.y", {"landlord_account_id": "L1"})]}
+    assert check_plan(plan) == []
+
+
+def test_empty_tag_value_fails():
+    plan = {"resource_changes": [rc("x.y", {"landlord_account_id": "  "})]}
+    assert len(check_plan(plan)) == 1
+
+
+def test_generic_across_types():
+    plan = {"resource_changes": [rc("aws_sqs_queue.q", {}), rc("aws_dynamodb_table.t", {})]}
+    assert len(check_plan(plan)) == 2
+
+
+def test_deleted_resources_are_skipped():
+    plan = {"resource_changes": [rc("x.gone", {}, actions=("delete",))]}
+    assert check_plan(plan) == []
+
+
+def test_idempotent():
+    plan = {"resource_changes": [rc("b.z", {}), rc("a.y", {})]}
+    first = check_plan(plan)
+    assert first == check_plan(plan)
+    assert [v["address"] for v in first] == ["a.y", "b.z"]  # sorted by address

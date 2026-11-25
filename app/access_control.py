@@ -1,29 +1,30 @@
+"""Access check: a PropertyManager may view a ScreeningReport only if the
+report belongs to the manager's own LandlordAccount.
+
+Ownership chain: ScreeningReport -> Tenant -> Property -> LandlordAccount.
+We compare landlord_account_id, never tenant_id.
 """
-B2, part 1 — implement can_access_screening_report().
-
-Read README.md's domain model first. A ScreeningReport belongs to a Tenant, a Tenant belongs to
-a Property, and a Property belongs to a LandlordAccount. A PropertyManager is scoped to exactly
-one LandlordAccount.
-
-Work out from that hierarchy which boundary actually gates access to a ScreeningReport.
-"""
-from app.models import PropertyManager, ScreeningReport, Property, Tenant
+# ADAPT the attribute/lookup names below to app/models.py and app/seed_data.py.
 
 
-def can_access_screening_report(
-    actor: PropertyManager,
-    report: ScreeningReport,
-    *,
-    properties: list[Property],
-    tenants: list[Tenant],
-) -> bool:
-    """
-    actor: the PropertyManager requesting access
-    report: the ScreeningReport they're trying to view
-    properties: all known Property records
-    tenants: all known Tenant records
+class AccessDenied(Exception):
+    pass
 
-    Return True if actor may view report, False otherwise. Fail closed — if anything needed to
-    make this determination is missing (tenant not found, property not found), return False.
-    """
-    raise NotImplementedError("Implement this.")
+
+def landlord_account_for_report(report, tenants, properties):
+    tenant = tenants[report.tenant_id]
+    prop = properties[tenant.property_id]
+    return prop.landlord_account_id
+
+
+def can_view_screening_report(manager, report, tenants, properties) -> bool:
+    try:
+        owner = landlord_account_for_report(report, tenants, properties)
+    except KeyError:
+        return False  # fail closed on dangling references
+    return manager.landlord_account_id is not None and manager.landlord_account_id == owner
+
+
+def require_view_screening_report(manager, report, tenants, properties):
+    if not can_view_screening_report(manager, report, tenants, properties):
+        raise AccessDenied("manager cannot view reports outside own landlord account")
